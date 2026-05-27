@@ -8,33 +8,23 @@ function db() {
   )
 }
 
-// GET /api/entries?limit=60
-export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url)
-  const limit = parseInt(searchParams.get('limit') || '60')
-
+// GET /api/ad-accounts
+export async function GET() {
   const { data, error } = await db()
-    .from('daily_entries')
+    .from('ad_accounts')
     .select('*')
-    .order('date', { ascending: false })
-    .limit(limit)
+    .order('created_at', { ascending: true })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json(data)
 }
 
-// POST /api/entries — upsert por fecha
+// POST /api/ad-accounts  { name, account_id }
 export async function POST(req: NextRequest) {
   const body = await req.json()
-
-  // Calcular ticket_promedio si no se provee
-  if ((!body.ticket_promedio || body.ticket_promedio === 0) && body.clientes > 0 && body.generated > 0) {
-    body.ticket_promedio = parseFloat((body.generated / body.clientes).toFixed(2))
-  }
-
   const { data, error } = await db()
-    .from('daily_entries')
-    .upsert(body, { onConflict: 'date' })
+    .from('ad_accounts')
+    .insert({ name: body.name, account_id: body.account_id })
     .select()
     .single()
 
@@ -42,13 +32,31 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(data)
 }
 
-// DELETE /api/entries?id=UUID
+// PATCH /api/ad-accounts?id=UUID  { is_active, name, ... }
+export async function PATCH(req: NextRequest) {
+  const { searchParams } = new URL(req.url)
+  const id = searchParams.get('id')
+  if (!id) return NextResponse.json({ error: 'id requerido' }, { status: 400 })
+
+  const body = await req.json()
+  const { data, error } = await db()
+    .from('ad_accounts')
+    .update(body)
+    .eq('id', id)
+    .select()
+    .single()
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  return NextResponse.json(data)
+}
+
+// DELETE /api/ad-accounts?id=UUID
 export async function DELETE(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const id = searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id requerido' }, { status: 400 })
 
-  const { error } = await db().from('daily_entries').delete().eq('id', id)
+  const { error } = await db().from('ad_accounts').delete().eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })
 }
