@@ -36,8 +36,7 @@ export default function MetricCard({ label, value, sub, valueClass, spark, delta
       </div>
 
       {/* Value */}
-      <div className="mono" style={{ fontWeight: 600, fontSize: 26, letterSpacing: '-.02em', lineHeight: 1, fontVariantNumeric: 'tabular-nums', color: 'var(--fg)' }}
-        {...(valueClass ? { className: `mono ${valueClass}` } : {})}>
+      <div className={`mono ${valueClass ?? ''}`} style={{ fontWeight: 600, fontSize: 26, letterSpacing: '-.02em', lineHeight: 1, fontVariantNumeric: 'tabular-nums', color: 'var(--fg)' }}>
         {value}
       </div>
 
