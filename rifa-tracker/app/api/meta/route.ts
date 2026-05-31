@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 
 const META_API = 'https://graph.facebook.com/v19.0'
 const TOKEN    = process.env.META_ACCESS_TOKEN
@@ -12,26 +13,52 @@ type Insights = {
   ctr: number
 }
 
-async function fetchAccountInsights(accountId: string, date: string): Promise<Insights> {
+function db() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  )
+}
+
+async function fetchAccountInsights(accountId: string, date: string, campaignIds: string[]): Promise<Insights> {
   const fields = 'spend,impressions,clicks,reach,cpm,ctr'
   const range  = JSON.stringify({ since: date, until: date })
-  const url    = `${META_API}/${accountId}/insights?fields=${fields}&time_range=${range}&level=account&access_token=${TOKEN}`
+  let url = `${META_API}/${accountId}/insights?fields=${fields}&time_range=${range}&level=account&access_token=${TOKEN}`
+
+  // Si hay campañas seleccionadas, filtramos por ellas
+  if (campaignIds.length > 0) {
+    const filtering = JSON.stringify([{
+      field:    'campaign.id',
+      operator: 'IN',
+      value:    campaignIds,
+    }])
+    url = `${META_API}/${accountId}/insights?fields=${fields}&time_range=${range}&level=campaign&filtering=${encodeURIComponent(filtering)}&access_token=${TOKEN}`
+  }
 
   const res  = await fetch(url, { next: { revalidate: 0 } })
   const json = await res.json()
 
   if (json.error) throw new Error(json.error.message)
 
-  const d = json.data?.[0]
-  if (!d) return { spend: 0, impressions: 0, clicks: 0, reach: 0, cpm: 0, ctr: 0 }
+  const data = campaignIds.length > 0
+    // Sumar todos los datos de las campañas filtradas
+    ? json.data || []
+    : (json.data?.[0] ? [json.data[0]] : [])
+
+  if (data.length === 0) return { spend: 0, impressions: 0, clicks: 0, reach: 0, cpm: 0, ctr: 0 }
+
+  const totalSpend       = data.reduce((s: number, d: Record<string,string>) => s + parseFloat(d.spend || '0'), 0)
+  const totalImpressions = data.reduce((s: number, d: Record<string,string>) => s + parseInt(d.impressions || '0'), 0)
+  const totalClicks      = data.reduce((s: number, d: Record<string,string>) => s + parseInt(d.clicks || '0'), 0)
+  const totalReach       = data.reduce((s: number, d: Record<string,string>) => s + parseInt(d.reach || '0'), 0)
 
   return {
-    spend:       parseFloat(d.spend       || '0'),
-    impressions: parseInt  (d.impressions || '0'),
-    clicks:      parseInt  (d.clicks      || '0'),
-    reach:       parseInt  (d.reach       || '0'),
-    cpm:         parseFloat(d.cpm         || '0'),
-    ctr:         parseFloat(d.ctr         || '0'),
+    spend:       totalSpend,
+    impressions: totalImpressions,
+    clicks:      totalClicks,
+    reach:       totalReach,
+    cpm:  totalImpressions > 0 ? (totalSpend / totalImpressions) * 1000 : 0,
+    ctr:  totalImpressions > 0 ? (totalClicks / totalImpressions) * 100  : 0,
   }
 }
 
@@ -44,7 +71,7 @@ export async function GET(req: NextRequest) {
   if (!date)  return NextResponse.json({ error: 'date requerida' }, { status: 400 })
   if (!TOKEN) return NextResponse.json({ error: 'META_ACCESS_TOKEN no configurado' }, { status: 500 })
 
-  // Determinar qué cuentas consultar
+  // Determinar cuentas
   let ids: string[] = []
   if (accountIds) {
     ids = accountIds.split(',').map(s => s.trim()).filter(Boolean)
@@ -54,14 +81,35 @@ export async function GET(req: NextRequest) {
     ids = [fallback]
   }
 
+  // Obtener selected_campaign_ids de la DB para cada cuenta
+  let campaignMap: Record<string, string[]> = {}
   try {
-    const results = await Promise.all(ids.map(id => fetchAccountInsights(id, date)))
+    const { data: accounts } = await db()
+      .from('ad_accounts')
+      .select('account_id, selected_campaign_ids')
+      .in('account_id', ids)
 
-    // Mapa por account_id
+    if (accounts) {
+      accounts.forEach((a: { account_id: string; selected_campaign_ids: string }) => {
+        try {
+          campaignMap[a.account_id] = JSON.parse(a.selected_campaign_ids || '[]')
+        } catch {
+          campaignMap[a.account_id] = []
+        }
+      })
+    }
+  } catch {
+    // Si falla la consulta DB, continuamos sin filtro de campañas
+  }
+
+  try {
+    const results = await Promise.all(
+      ids.map(id => fetchAccountInsights(id, date, campaignMap[id] || []))
+    )
+
     const perAccount: Record<string, Insights> = {}
     ids.forEach((id, i) => { perAccount[id] = results[i] })
 
-    // Totales agregados
     const totalSpend       = results.reduce((s, r) => s + r.spend,       0)
     const totalImpressions = results.reduce((s, r) => s + r.impressions,  0)
     const totalClicks      = results.reduce((s, r) => s + r.clicks,       0)
@@ -72,7 +120,6 @@ export async function GET(req: NextRequest) {
       impressions: totalImpressions,
       clicks:      totalClicks,
       reach:       totalReach,
-      // CPM y CTR se recalculan del total (no se promedian)
       cpm: totalImpressions > 0 ? (totalSpend / totalImpressions) * 1000 : 0,
       ctr: totalImpressions > 0 ? (totalClicks / totalImpressions) * 100  : 0,
     }
